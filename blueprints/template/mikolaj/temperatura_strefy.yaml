@@ -1,0 +1,114 @@
+blueprint:
+  name: Temperatura strefy (czujnik z fallbackiem na głowice)
+  description: >-
+    Sensor temperatury strefy grzewczej. Bierze odczyt z zewnętrznego czujnika,
+    a gdy ten jest niedostępny albo zbyt długo nie raportował (np. padła
+    bateria), liczy średnią temperaturę z głowic termostatycznych w strefie.
+
+
+    Od odczytu głowic można odjąć ich kalibrację (żeby nie powstała pętla, gdy
+    kalibrację ustawia np. Better Thermostat) oraz dodać stały offset, bo
+    głowica mierzy temperaturę tuż przy gorącym kaloryferze.
+
+
+    Atrybut "zrodlo" mówi, skąd pochodzi odczyt: czujnik / glowice.
+  domain: template
+  author: Mikołaj
+  source_url: https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/template/mikolaj/temperatura_strefy.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    external_sensor:
+      name: Czujnik temperatury
+      description: Zewnętrzny czujnik temperatury w strefie (opcjonalny).
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+              device_class: temperature
+    max_age:
+      name: Maksymalny wiek odczytu czujnika
+      description: Po tylu minutach bez raportu czujnik uznajemy za martwy.
+      default: 60
+      selector:
+        number:
+          min: 5
+          max: 720
+          step: 5
+          unit_of_measurement: min
+          mode: box
+    trvs:
+      name: Głowice termostatyczne
+      description: Termostaty (climate) w strefie, z których brana jest temperatura awaryjna.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: climate
+    calibrations:
+      name: Kalibracja głowic (opcjonalnie)
+      description: >-
+        Encje kalibracji głowic (np. number.*_local_temperature_calibration).
+        Ich średnia jest odejmowana od średniej temperatury głowic.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: number
+    fallback_offset:
+      name: Offset w trybie awaryjnym
+      description: Dodawany do temperatury z głowic (zwykle ujemny, np. -1).
+      default: 0
+      selector:
+        number:
+          min: -5
+          max: 5
+          step: 0.1
+          unit_of_measurement: °C
+          mode: box
+
+variables:
+  ext: !input external_sensor
+  max_age_min: !input max_age
+  trvs: !input trvs
+  calibrations: !input calibrations
+  fallback_offset: !input fallback_offset
+
+sensor:
+  unit_of_measurement: °C
+  device_class: temperature
+  state_class: measurement
+  state: >-
+    {% set ns = namespace(ok=[]) %}
+    {% for s in ext if has_value(s) and states(s) | is_number
+         and (now() - states[s].last_reported).total_seconds() < max_age_min * 60 %}
+      {% set ns.ok = ns.ok + [states(s) | float] %}
+    {% endfor %}
+    {% if ns.ok | count > 0 %}
+      {{ (ns.ok | sum / ns.ok | count) | round(1) }}
+    {% else %}
+      {% set t = trvs | map('state_attr', 'current_temperature')
+         | map('float', none) | reject('none') | list %}
+      {% set c = calibrations | map('states')
+         | map('float', none) | reject('none') | list %}
+      {% set cal = (c | sum / c | count) if c | count > 0 else 0 %}
+      {% if t | count > 0 %}
+        {{ (t | sum / t | count - cal + fallback_offset | float(0)) | round(1) }}
+      {% else %}
+        {{ none }}
+      {% endif %}
+    {% endif %}
+  availability: >-
+    {{ ext | select('has_value') | list | count > 0
+       or trvs | map('state_attr', 'current_temperature') | map('float', none) | reject('none') | list | count > 0 }}
+  attributes:
+    zrodlo: >-
+      {% set ns = namespace(ok=false) %}
+      {% for s in ext if has_value(s) and states(s) | is_number
+           and (now() - states[s].last_reported).total_seconds() < max_age_min * 60 %}
+        {% set ns.ok = true %}
+      {% endfor %}
+      {{ 'czujnik' if ns.ok else 'glowice' }}
