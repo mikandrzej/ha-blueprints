@@ -1,0 +1,222 @@
+blueprint:
+  name: Sterowanie piecem (suma logiczna stref)
+  description: >-
+    Włącza piec gazowy tylko wtedy, gdy któryś kaloryfer w domu faktycznie chce
+    grzać (suma logiczna wszystkich głowic / stref).
+
+
+    • Zapotrzebowanie: otwarcie zaworu (np. sensor *_pi_heating_demand z
+    Zigbee2MQTT) powyżej progu na dowolnej głowicy, lub opcjonalnie
+    hvac_action = heating na dowolnym termostacie.
+
+    • Ochrona przed taktowaniem: opóźnienie włączenia i wyłączenia, minimalny
+    czas pracy i minimalna przerwa pieca.
+
+    • Opcjonalny wyłącznik sezonu grzewczego: gdy jest wyłączony, piec nie
+    włączy się wcale.
+
+
+    Jeśli wszystkie czujniki są niedostępne, zapotrzebowanie = brak, więc piec
+    się wyłączy (bezpieczny stan).
+  domain: automation
+  author: Mikołaj
+  source_url: https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/automation/mikolaj/kotlownia_piec.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    boiler:
+      name: Piec
+      description: >-
+        Przekaźnik pieca (switch). Do testów możesz wskazać input_boolean,
+        np. input_boolean.kotlownia_piec_test.
+      selector:
+        entity:
+          filter:
+            - domain:
+                - switch
+                - input_boolean
+    demand_section:
+      name: Zapotrzebowanie na ciepło
+      icon: mdi:radiator
+      collapsed: false
+      input:
+        valve_sensors:
+          name: Otwarcie zaworów
+          description: >-
+            Sensory otwarcia zaworu w % ze wszystkich głowic w domu (np.
+            sensor.salon_jadalnia_kaloryfer_pi_heating_demand).
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: sensor
+        valve_threshold:
+          name: Próg otwarcia zaworu
+          description: Zawór otwarty co najmniej tyle = głowica chce grzać.
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+        heating_climates:
+          name: Termostaty (dodatkowy sygnał)
+          description: >-
+            Opcjonalnie: termostaty, których hvac_action = heating też liczy
+            się jako zapotrzebowanie (np. running_state głowic albo termostaty
+            Better Thermostat).
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: climate
+        season_switches:
+          name: Wyłącznik sezonu grzewczego
+          description: >-
+            Opcjonalnie: input_boolean / switch. Gdy którykolwiek jest
+            wyłączony, piec nie grzeje.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain:
+                    - input_boolean
+                    - switch
+    timing_section:
+      name: Czasy (ochrona przed taktowaniem)
+      icon: mdi:timer-outline
+      collapsed: true
+      input:
+        on_delay:
+          name: Opóźnienie włączenia
+          description: Jak długo zapotrzebowanie musi trwać, zanim piec ruszy.
+          default: 120
+          selector:
+            number:
+              min: 0
+              max: 1800
+              step: 10
+              unit_of_measurement: s
+              mode: box
+        off_delay:
+          name: Opóźnienie wyłączenia
+          description: Jak długo musi nie być zapotrzebowania, zanim piec stanie.
+          default: 180
+          selector:
+            number:
+              min: 0
+              max: 1800
+              step: 10
+              unit_of_measurement: s
+              mode: box
+        min_run:
+          name: Minimalny czas pracy
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
+        min_off:
+          name: Minimalna przerwa
+          default: 5
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+# restart: nowe zdarzenie (np. powrót zapotrzebowania) anuluje oczekujące
+# wyłączenie i odwrotnie.
+mode: restart
+
+trigger_variables:
+  valves: !input valve_sensors
+  threshold: !input valve_threshold
+  climates: !input heating_climates
+  seasons: !input season_switches
+
+triggers:
+  - trigger: template
+    id: demand_on
+    value_template: >-
+      {{ (seasons | reject('is_state', 'on') | list | count == 0)
+         and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
+              or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+    for:
+      seconds: !input on_delay
+  - trigger: template
+    id: demand_off
+    value_template: >-
+      {{ not ((seasons | reject('is_state', 'on') | list | count == 0)
+         and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
+              or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0))) }}
+    for:
+      seconds: !input off_delay
+  - trigger: homeassistant
+    id: start
+    event: start
+
+variables:
+  boiler: !input boiler
+  min_run: !input min_run
+  min_off: !input min_off
+
+actions:
+  - variables:
+      demand_now: >-
+        {{ (seasons | reject('is_state', 'on') | list | count == 0)
+           and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
+                or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+  - choose:
+      # Włączenie: czekamy do końca minimalnej przerwy.
+      - conditions:
+          - condition: template
+            value_template: "{{ demand_now and not is_state(boiler, 'on') }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ trigger.id != 'start' }}"
+            then:
+              - delay:
+                  seconds: >-
+                    {{ [0, (min_off | float * 60)
+                        - (now() - states[boiler].last_changed).total_seconds()] | max | int }}
+          - condition: template
+            value_template: >-
+              {{ (seasons | reject('is_state', 'on') | list | count == 0)
+                 and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
+                      or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ boiler }}"
+      # Wyłączenie: czekamy do końca minimalnego czasu pracy.
+      - conditions:
+          - condition: template
+            value_template: "{{ not demand_now and is_state(boiler, 'on') }}"
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ trigger.id != 'start' }}"
+            then:
+              - delay:
+                  seconds: >-
+                    {{ [0, (min_run | float * 60)
+                        - (now() - states[boiler].last_changed).total_seconds()] | max | int }}
+          - condition: template
+            value_template: >-
+              {{ not ((seasons | reject('is_state', 'on') | list | count == 0)
+                 and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
+                      or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0))) }}
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ boiler }}"
