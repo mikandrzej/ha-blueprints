@@ -121,6 +121,17 @@ blueprint:
           default: true
           selector:
             boolean: {}
+        door_close_delay:
+          name: Opóźnienie zgaszenia po zamknięciu drzwi
+          description: Ile sekund po zamknięciu drzwi zgasić światło (0 = od razu).
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 3600
+              step: 5
+              unit_of_measurement: s
+              mode: box
         door_auto_off:
           name: Zgaś, gdy drzwi otwarte dłużej niż
           description: Po ilu minutach otwartych drzwi światło zgaśnie samo. 0 = wyłączone.
@@ -184,6 +195,8 @@ triggers:
     entity_id: !input door_sensors
     from: "on"
     to: "off"
+    for:
+      seconds: !input door_close_delay
     id: door_close
   - trigger: state
     entity_id: !input door_sensors
