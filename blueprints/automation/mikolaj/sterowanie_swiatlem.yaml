@@ -1,0 +1,297 @@
+blueprint:
+  name: Sterowanie światłem
+  description: >-
+    Steruje jednym światłem (light lub switch) za pomocą kilku czujników ruchu,
+    kilku włączników slave i kilku czujników otwarcia drzwi.
+
+
+    • Ruch: wykrycie ruchu zapala światło, gaśnie po ustaniu ruchu na wszystkich
+    czujnikach (z opcjonalnym opóźnieniem).
+
+    • Włączniki slave: tryb podążania za stanem, stanu przeciwnego lub zmiany
+    stanu (toggle) + opcjonalny czas automatycznego wyłączenia.
+
+    • Drzwi: otwarcie zapala światło, zamknięcie może je gasić, a jeśli drzwi
+    zostaną otwarte na dłużej, światło gaśnie po ustawionym czasie.
+
+
+    Światło nie zgaśnie automatycznie, dopóki którykolwiek czujnik ruchu
+    wykrywa ruch.
+  domain: automation
+  author: Mikołaj
+  source_url: https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/automation/mikolaj/sterowanie_swiatlem.yaml
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    light_target:
+      name: Światło
+      description: Sterowane światło lub przekaźnik (light / switch).
+      selector:
+        entity:
+          filter:
+            - domain:
+                - light
+                - switch
+    motion_section:
+      name: Czujniki ruchu
+      icon: mdi:motion-sensor
+      collapsed: false
+      input:
+        motion_sensors:
+          name: Czujniki ruchu
+          description: Wykrycie ruchu na dowolnym czujniku zapala światło.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+        motion_off_delay:
+          name: Opóźnienie zgaszenia po ustaniu ruchu
+          description: Ile sekund czekać po ustaniu ruchu (0 = od razu).
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 3600
+              step: 5
+              unit_of_measurement: s
+              mode: box
+    switch_section:
+      name: Włączniki slave
+      icon: mdi:light-switch
+      collapsed: false
+      input:
+        slave_switches:
+          name: Włączniki slave
+          description: Encje włączników (switch / binary_sensor / light / input_boolean).
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain:
+                    - switch
+                    - binary_sensor
+                    - light
+                    - input_boolean
+        slave_mode:
+          name: Tryb włączników
+          default: follow
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Podążanie za stanem (wł. → zapala, wył. → gasi)
+                  value: follow
+                - label: Przeciwny stan (wł. → gasi, wył. → zapala)
+                  value: opposite
+                - label: Zmiana stanu (każde przełączenie = toggle)
+                  value: toggle
+        switch_auto_off:
+          name: Automatyczne wyłączenie po czasie
+          description: >-
+            Po ilu minutach od zapalenia światło zgaśnie samo (o ile nie ma ruchu
+            i nie są otwarte drzwi). 0 = wyłączone.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 720
+              step: 1
+              unit_of_measurement: min
+              mode: box
+    door_section:
+      name: Czujniki otwarcia drzwi
+      icon: mdi:door-open
+      collapsed: false
+      input:
+        door_sensors:
+          name: Czujniki drzwi
+          description: Otwarcie dowolnych drzwi zapala światło.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: binary_sensor
+        door_close_off:
+          name: Gaś po zamknięciu drzwi
+          description: Zamknięcie drzwi gasi światło (jeśli nie ma ruchu i inne drzwi są zamknięte).
+          default: true
+          selector:
+            boolean: {}
+        door_auto_off:
+          name: Zgaś, gdy drzwi otwarte dłużej niż
+          description: Po ilu minutach otwartych drzwi światło zgaśnie samo. 0 = wyłączone.
+          default: 10
+          selector:
+            number:
+              min: 0
+              max: 720
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+variables:
+  light_entity: !input light_target
+  motion_list: !input motion_sensors
+  door_list: !input door_sensors
+  slave_mode: !input slave_mode
+  switch_timeout_min: !input switch_auto_off
+  door_timeout_min: !input door_auto_off
+  door_close_off: !input door_close_off
+  motion_active: "{{ motion_list | select('is_state', 'on') | list | count > 0 }}"
+  # Czy jakieś drzwi są otwarte i jeszcze NIE przekroczyły limitu czasu
+  door_holding: >-
+    {% set t = door_timeout_min | float(0) * 60 %}
+    {% set open = expand(door_list) | selectattr('state', 'eq', 'on') | list %}
+    {% if t <= 0 %}
+      {{ open | count > 0 }}
+    {% else %}
+      {{ open | selectattr('last_changed', 'gt', now() - timedelta(seconds=t - 2)) | list | count > 0 }}
+    {% endif %}
+
+triggers:
+  - trigger: state
+    entity_id: !input motion_sensors
+    from: "off"
+    to: "on"
+    id: motion_on
+  - trigger: state
+    entity_id: !input motion_sensors
+    from: "on"
+    to: "off"
+    for:
+      seconds: !input motion_off_delay
+    id: motion_off
+  - trigger: state
+    entity_id: !input slave_switches
+    to:
+      - "on"
+      - "off"
+    id: switch_change
+  - trigger: state
+    entity_id: !input door_sensors
+    from: "off"
+    to: "on"
+    id: door_open
+  - trigger: state
+    entity_id: !input door_sensors
+    from: "on"
+    to: "off"
+    id: door_close
+  - trigger: state
+    entity_id: !input door_sensors
+    to: "on"
+    for:
+      minutes: !input door_auto_off
+    id: door_timeout
+  - trigger: state
+    entity_id: !input light_target
+    to: "on"
+    for:
+      minutes: !input switch_auto_off
+    id: light_timeout
+
+conditions: []
+
+actions:
+  - choose:
+      # --- Ruch wykryty -> zapal
+      - conditions:
+          - condition: trigger
+            id: motion_on
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ light_entity }}"
+
+      # --- Ruch ustał -> zgaś, jeśli nigdzie nie ma ruchu i drzwi nie trzymają światła
+      - conditions:
+          - condition: trigger
+            id: motion_off
+          - condition: template
+            value_template: "{{ not motion_active and not door_holding }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ light_entity }}"
+
+      # --- Włącznik slave
+      - conditions:
+          - condition: trigger
+            id: switch_change
+          - condition: template
+            value_template: >-
+              {{ trigger.from_state is not none
+                 and trigger.from_state.state in ['on', 'off']
+                 and trigger.from_state.state != trigger.to_state.state }}
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ slave_mode == 'toggle' }}"
+                sequence:
+                  - action: homeassistant.toggle
+                    target:
+                      entity_id: "{{ light_entity }}"
+              - conditions:
+                  - condition: template
+                    value_template: >-
+                      {{ (slave_mode == 'follow' and trigger.to_state.state == 'on')
+                         or (slave_mode == 'opposite' and trigger.to_state.state == 'off') }}
+                sequence:
+                  - action: homeassistant.turn_on
+                    target:
+                      entity_id: "{{ light_entity }}"
+            default:
+              - action: homeassistant.turn_off
+                target:
+                  entity_id: "{{ light_entity }}"
+
+      # --- Drzwi otwarte -> zapal
+      - conditions:
+          - condition: trigger
+            id: door_open
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ light_entity }}"
+
+      # --- Drzwi zamknięte -> zgaś (opcjonalnie)
+      - conditions:
+          - condition: trigger
+            id: door_close
+          - condition: template
+            value_template: "{{ door_close_off and not motion_active and not door_holding }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ light_entity }}"
+
+      # --- Drzwi otwarte zbyt długo -> zgaś
+      - conditions:
+          - condition: trigger
+            id: door_timeout
+          - condition: template
+            value_template: "{{ door_timeout_min | float(0) > 0 and not motion_active and not door_holding }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ light_entity }}"
+
+      # --- Światło świeci zbyt długo -> zgaś
+      - conditions:
+          - condition: trigger
+            id: light_timeout
+          - condition: template
+            value_template: "{{ switch_timeout_min | float(0) > 0 and not motion_active and not door_holding }}"
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ light_entity }}"
