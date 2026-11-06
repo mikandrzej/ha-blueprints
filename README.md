@@ -25,8 +25,12 @@ Ręcznie: `https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/auto
 
 Blueprint sensora szablonowego (`domain: template`). Zwraca temperaturę z zewnętrznego czujnika, a gdy ten jest niedostępny lub nie raportował dłużej niż ustawiony czas, średnią z głowic (minus ich kalibracja, plus opcjonalny offset). Atrybut `zrodlo` = `czujnik` / `glowice`.
 
-Import: Ustawienia → Automatyzacje → Blueprinty → Importuj blueprint →
+[![Importuj blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmikandrzej%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Ftemplate%2Fmikolaj%2Ftemperatura_strefy.yaml)
+
+Ręcznie: Ustawienia → Automatyzacje → Blueprinty → Importuj blueprint →
 `https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/template/mikolaj/temperatura_strefy.yaml`
+
+Jeśli import się nie powiedzie, skopiuj plik do `/config/blueprints/template/mikolaj/temperatura_strefy.yaml` (np. w Studio Code Server) i zrestartuj HA. Blueprinty szablonów mogą nie pojawiać się na liście blueprintów w UI. To normalne, bo używa się ich w `configuration.yaml`.
 
 Użycie (w `configuration.yaml`, jeden wpis na strefę):
 
