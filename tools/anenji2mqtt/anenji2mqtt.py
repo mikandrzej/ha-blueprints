@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ANENJI ANJ-6200W (SMG-II Modbus RTU over RS232) -> MQTT with Home Assistant discovery.
-v2: odczyt + zapis wybranych ustawień (priorytety, prądy ładowania, brzęczyk, LCD, tryby)."""
+v3: odczyt + zapis ustawień (priorytety, prądy, napięcia baterii z limitami LFP 16S, brzęczyk, LCD, tryby)."""
 import json, os, time, logging, queue
 import minimalmodbus
 import paho.mqtt.client as mqtt
@@ -89,7 +89,31 @@ SWITCHES = {
 NUMBERS = {
     "set_max_charging_current":       (332, 0.1, 10, 120, 1, "A", "Maks. prąd ładowania (PV+sieć)", "mdi:current-dc"),
     "set_max_mains_charging_current": (333, 0.1, 2, 80, 1, "A", "Maks. prąd ładowania z sieci", "mdi:transmission-tower-import"),
+    # napięcia baterii – twarde limity dla LiFePO4 16S
+    "set_bulk_voltage":          (324, 0.1, 54.0, 57.6, 0.1, "V", "Bateria: napięcie ładowania (bulk)", "mdi:battery-arrow-up"),
+    "set_float_voltage":         (325, 0.1, 53.0, 56.0, 0.1, "V", "Bateria: napięcie podtrzymania (float)", "mdi:battery-sync"),
+    "set_overvoltage":           (323, 0.1, 57.0, 60.0, 0.1, "V", "Bateria: zabezpieczenie przepięciowe", "mdi:battery-alert"),
+    "set_mains_return_voltage":  (326, 0.1, 44.0, 53.0, 0.1, "V", "Bateria: powrót z sieci na baterię", "mdi:battery-arrow-up-outline"),
+    "set_mains_low_voltage":     (327, 0.1, 44.0, 53.0, 0.1, "V", "Bateria: przejście na sieć", "mdi:transmission-tower-import"),
+    "set_offgrid_low_voltage":   (329, 0.1, 44.0, 53.0, 0.1, "V", "Bateria: odcięcie (off-grid)", "mdi:battery-off"),
 }
+VOLTAGE_REGS = {323, 324, 325, 326, 327, 329}
+
+def check_voltage_order(v):
+    """v: dict register->wolty po planowanej zmianie. Rzuca ValueError przy złej kolejności."""
+    rules = [
+        (325, "<=", 324, "float musi być ≤ bulk"),
+        (324, "<", 323, "bulk musi być < przepięcie"),
+        (329, "<", 327, "odcięcie musi być < przejście na sieć"),
+        (327, "<", 326, "przejście na sieć musi być < powrót na baterię"),
+        (326, "<", 325, "powrót na baterię musi być < float"),
+    ]
+    for a, op, b, msg in rules:
+        if a in v and b in v:
+            ok = v[a] <= v[b] if op == "<=" else v[a] < v[b]
+            if not ok:
+                raise ValueError(f"{msg} ({v[a]:.1f} V vs {v[b]:.1f} V)")
+
 # diagnostyka (tylko odczyt): key -> (register, scale, name)
 SETTING_SENSORS = {
     "cfg_battery_overvoltage": (323, 0.1, "Bateria: zabezpieczenie przepięciowe"),
@@ -245,7 +269,8 @@ def publish_discovery(cli):
             else:
                 _reg, _sc, mn, mx, step, unit, name, icon = NUMBERS[k]
                 cfg.update({"name": name, "icon": icon, "min": mn, "max": mx, "step": step,
-                            "unit_of_measurement": unit, "mode": "box", "device_class": "current"})
+                            "unit_of_measurement": unit, "mode": "box",
+                            "device_class": "voltage" if unit == "V" else "current"})
             pub(comp, k, cfg)
 
 def main():
@@ -296,6 +321,10 @@ def main():
         for key, payload in pending.items():
             try:
                 reg, raw = parse_command(key, payload)
+                if reg in VOLTAGE_REGS:
+                    cur = {r: inst.read_register(r, 0, 3) / 10 for r in sorted(VOLTAGE_REGS)}
+                    cur[reg] = raw / 10
+                    check_voltage_order(cur)
                 write_register(inst, reg, raw)
                 log.info("ZAPIS OK: %s = %s (rejestr %d = %d)", key, payload, reg, raw)
                 cli.publish(f"{BASE}/last_write", json.dumps({"key": key, "value": payload, "ok": True}, ensure_ascii=False))
