@@ -74,6 +74,21 @@ blueprint:
               multiple: true
               filter:
                 - domain: climate
+        min_valid_temp:
+          name: Minimalna wiarygodna temperatura głowicy
+          description: >-
+            Termostat z dodatkowego sygnału liczy się jako zapotrzebowanie tylko,
+            gdy jego temperatura jest co najmniej taka (odrzuca błędne odczyty
+            typu 0 °C) i jest niższa od jego temperatury zadanej (+0,5 °C).
+            Odrzucone głowice są wypisywane w opisie stanu.
+          default: 3
+          selector:
+            number:
+              min: -10
+              max: 15
+              step: 0.5
+              unit_of_measurement: °C
+              mode: box
         season_switches:
           name: Wyłącznik sezonu grzewczego
           description: >-
@@ -175,23 +190,26 @@ trigger_variables:
   valves: !input valve_sensors
   threshold: !input valve_threshold
   climates: !input heating_climates
+  min_valid: !input min_valid_temp
   seasons: !input season_switches
 
 triggers:
   - trigger: template
     id: demand_on
     value_template: >-
+      {% set nc = namespace(c=0) %}{% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}{% set nc.c = nc.c + 1 %}{% endfor %}
       {{ (seasons | reject('is_state', 'on') | list | count == 0)
          and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
-              or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+              or (nc.c > 0)) }}
     for:
       seconds: !input on_delay
   - trigger: template
     id: demand_off
     value_template: >-
+      {% set nc = namespace(c=0) %}{% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}{% set nc.c = nc.c + 1 %}{% endfor %}
       {{ not ((seasons | reject('is_state', 'on') | list | count == 0)
          and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
-              or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0))) }}
+              or (nc.c > 0))) }}
     for:
       seconds: !input off_delay
   - trigger: homeassistant
@@ -232,8 +250,14 @@ actions:
         {% for e in valves if states(e) | float(0) >= threshold | float %}
           {% set ns.n = ns.n + [area_name(e) or state_attr(e, 'friendly_name') or e] %}
         {% endfor %}
-        {% for e in climates if is_state_attr(e, 'hvac_action', 'heating') %}
+        {% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}
           {% set ns.n = ns.n + [area_name(e) or state_attr(e, 'friendly_name') or e] %}
+        {% endfor %}
+        {{ ns.n | unique | list }}
+      ignored_names: >-
+        {% set ns = namespace(n=[]) %}
+        {% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and not (state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5) %}
+          {% set ns.n = ns.n + [(area_name(e) or state_attr(e, 'friendly_name') or e) ~ ' (' ~ state_attr(e, 'current_temperature') ~ ' °C)'] %}
         {% endfor %}
         {{ ns.n | unique | list }}
       boiler_on: "{{ is_state(boiler, 'on') }}"
@@ -273,6 +297,9 @@ actions:
         {% else %}
           {% set txt = 'Wyłączony – brak zapotrzebowania' %}{% set until = idle %}
         {% endif %}
+        {% if ignored_names | count > 0 %}
+          {% set txt = txt ~ '. Pominięto głowice: ' ~ ignored_names | join(', ') %}
+        {% endif %}
         {{ {'text': txt[:255], 'until': until | int} }}
   - if:
       - condition: template
@@ -297,9 +324,10 @@ actions:
   # --- Sterowanie piecem --------------------------------------------------
   - variables:
       demand_now: >-
+        {% set nc = namespace(c=0) %}{% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}{% set nc.c = nc.c + 1 %}{% endfor %}
         {{ (seasons | reject('is_state', 'on') | list | count == 0)
            and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
-                or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+                or (nc.c > 0)) }}
   - choose:
       # Włączenie: czekamy do końca minimalnej przerwy.
       - conditions:
@@ -316,9 +344,10 @@ actions:
                         - (now() - states[boiler].last_changed).total_seconds()] | max | int }}
           - condition: template
             value_template: >-
+              {% set nc = namespace(c=0) %}{% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}{% set nc.c = nc.c + 1 %}{% endfor %}
               {{ (seasons | reject('is_state', 'on') | list | count == 0)
                  and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
-                      or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0)) }}
+                      or (nc.c > 0)) }}
           - action: homeassistant.turn_on
             target:
               entity_id: "{{ boiler }}"
@@ -337,9 +366,10 @@ actions:
                         - (now() - states[boiler].last_changed).total_seconds()] | max | int }}
           - condition: template
             value_template: >-
+              {% set nc = namespace(c=0) %}{% for e in climates if is_state_attr(e, 'hvac_action', 'heating') and state_attr(e, 'current_temperature') | float(-99) >= min_valid | float and state_attr(e, 'current_temperature') | float(99) < state_attr(e, 'temperature') | float(-99) + 0.5 %}{% set nc.c = nc.c + 1 %}{% endfor %}
               {{ not ((seasons | reject('is_state', 'on') | list | count == 0)
                  and ((valves | map('states') | map('float', 0) | select('ge', threshold | float) | list | count > 0)
-                      or (climates | select('is_state_attr', 'hvac_action', 'heating') | list | count > 0))) }}
+                      or (nc.c > 0))) }}
           - action: homeassistant.turn_off
             target:
               entity_id: "{{ boiler }}"
