@@ -300,7 +300,13 @@ def main():
     cli.connect(MQTT_HOST, MQTT_PORT, 60)
     cli.loop_start()
 
-    inst = make_instrument()
+    inst = None
+    while inst is None:
+        try:
+            inst = make_instrument()
+        except Exception as e:
+            log.warning("Nie mogę otworzyć portu %s (%s) – czekam 10 s", PORT, e)
+            time.sleep(10)
     fails, cycle = 0, 0
     settings = {}
     while True:
@@ -352,7 +358,11 @@ def main():
                     inst.serial.close()
                 except Exception:
                     pass
-                inst = make_instrument()
+                try:
+                    inst = make_instrument()
+                    log.info("Port %s otwarty ponownie", PORT)
+                except Exception as e2:
+                    log.warning("Nie mogę otworzyć portu %s (%s) – adapter odłączony? Ponawiam.", PORT, e2)
         cycle += 1
         # 3) czekaj, ale reaguj szybko na komendy
         while time.time() - t0 < INTERVAL and commands.empty():

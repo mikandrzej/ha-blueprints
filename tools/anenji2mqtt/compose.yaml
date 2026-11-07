@@ -1,20 +1,22 @@
-# TrueNAS SCALE: Apps -> Discover Apps -> (⋮) Install via YAML -> wklej całość.
-# Plik anenji2mqtt.py musi leżeć w HOST_DIR (np. /mnt/<pool>/apps/anenji2mqtt).
+# TrueNAS SCALE: Apps -> Discover Apps -> (⋮) Install via YAML (albo Edit istniejącej aplikacji).
+# Odporne na odłączenie/ponowne podłączenie adaptera: zamiast "devices" montujemy /dev
+# i zezwalamy na porty ttyUSB (major 188), a port wskazujemy stałą ścieżką by-path.
 services:
   anenji2mqtt:
     image: python:3.12-slim
     container_name: anenji2mqtt
     restart: unless-stopped
-    devices:
-      # Najlepiej stała ścieżka: ls -l /dev/serial/by-id/
-      - /dev/serial/by-id/usb-1a86_USB2.0-Ser_-if00-port0:/dev/ttyINV
     volumes:
       - /mnt/pool-raidz/apps/anenji2mqtt:/app:ro
+      - /dev:/dev
+    device_cgroup_rules:
+      - "c 188:* rmw"
     environment:
+      SERIAL_PORT: "/dev/serial/by-path/WPISZ_SCIEZKE"
       MQTT_HOST: 10.22.2.20
       MQTT_PORT: "1883"
       MQTT_USER: "uzytkownik_mqtt"
       MQTT_PASS: "haslo_mqtt"
       INTERVAL: "10"
       PYTHONUNBUFFERED: "1"
-    command: sh -c "pip install -q --no-cache-dir minimalmodbus 'paho-mqtt>=2' && python /app/anenji2mqtt.py"
+    command: sh -c "pip install -q --no-cache-dir --root-user-action=ignore minimalmodbus 'paho-mqtt>=2' && python /app/anenji2mqtt.py"
