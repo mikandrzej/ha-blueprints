@@ -30,8 +30,14 @@ blueprint:
               device_class: temperature
     max_age:
       name: Maksymalny wiek odczytu czujnika
-      description: Po tylu minutach bez raportu czujnik uznajemy za martwy.
-      default: 60
+      description: >-
+        Po tylu minutach bez zmiany odczytu czujnik uznajemy za martwy.
+        Czujniki z Zigbee2MQTT nie odświeżają w HA czasu raportu, gdy wysyłają
+        tę samą wartość, a czujniki Tuya przy stałej temperaturze raportują
+        rzadko (np. co 120 min). Ustaw wyraźnie więcej niż maksymalny interwał
+        raportowania czujnika, np. 180 min. Rozłączenie czujnika i tak wykryje
+        dostępność (unavailable) z Zigbee2MQTT.
+      default: 180
       selector:
         number:
           min: 5
