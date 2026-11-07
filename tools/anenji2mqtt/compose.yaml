@@ -12,7 +12,7 @@ services:
     device_cgroup_rules:
       - "c 188:* rmw"
     environment:
-      SERIAL_PORT: "/dev/serial/by-path/WPISZ_SCIEZKE"
+      SERIAL_PORT: "/dev/serial/by-path/pci-0000:0a:00.3-usb-0:4:1.0-port0"
       MQTT_HOST: 10.22.2.20
       MQTT_PORT: "1883"
       MQTT_USER: "uzytkownik_mqtt"
