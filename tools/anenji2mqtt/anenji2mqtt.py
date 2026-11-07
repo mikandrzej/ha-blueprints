@@ -91,7 +91,7 @@ NUMBERS = {
     "set_max_mains_charging_current": (333, 0.1, 2, 80, 1, "A", "Maks. prąd ładowania z sieci", "mdi:transmission-tower-import"),
     # napięcia baterii – twarde limity dla LiFePO4 16S
     "set_bulk_voltage":          (324, 0.1, 54.0, 57.6, 0.1, "V", "Bateria: napięcie ładowania (bulk)", "mdi:battery-arrow-up"),
-    "set_float_voltage":         (325, 0.1, 53.0, 56.0, 0.1, "V", "Bateria: napięcie podtrzymania (float)", "mdi:battery-sync"),
+    "set_float_voltage":         (325, 0.1, 53.0, 56.8, 0.1, "V", "Bateria: napięcie podtrzymania (float)", "mdi:battery-sync"),
     "set_overvoltage":           (323, 0.1, 57.0, 60.0, 0.1, "V", "Bateria: zabezpieczenie przepięciowe", "mdi:battery-alert"),
     "set_mains_return_voltage":  (326, 0.1, 44.0, 53.0, 0.1, "V", "Bateria: powrót z sieci na baterię", "mdi:battery-arrow-up-outline"),
     "set_mains_low_voltage":     (327, 0.1, 44.0, 53.0, 0.1, "V", "Bateria: przejście na sieć", "mdi:transmission-tower-import"),
