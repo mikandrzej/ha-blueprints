@@ -17,6 +17,23 @@ Wymaga Home Assistant 2024.10 lub nowszego.
 
 Włącza piec, gdy którakolwiek głowica w domu ma otwarty zawór (np. `sensor.*_pi_heating_demand` z Zigbee2MQTT) albo termostat raportuje `hvac_action: heating`. Ma opóźnienie włączenia/wyłączenia, minimalny czas pracy i minimalną przerwę oraz opcjonalny wyłącznik sezonu grzewczego.
 
+Opcjonalnie wystawia stan pracy pieca do pomocników, żeby pokazać go na panelu:
+
+- `input_text` (maks. długość 255): opis, np. „Grzeje – zapotrzebowanie: Kuchnia, Salon”, „Kończy cykl – minimalny czas pracy (brak zapotrzebowania)”, „Czeka – minimalna przerwa pieca”, „Wyłączony – sezon grzewczy wyłączony”.
+- `input_datetime` (data i godzina): koniec bieżącego oczekiwania; panel może z niego policzyć, ile zostało.
+
+```yaml
+input_text:
+  kotlownia_piec_status:
+    name: Piec – stan
+    max: 255
+input_datetime:
+  kotlownia_piec_koniec_fazy:
+    name: Piec – koniec fazy
+    has_date: true
+    has_time: true
+```
+
 [![Importuj blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmikandrzej%2Fha-blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmikolaj%2Fkotlownia_piec.yaml)
 
 Ręcznie: `https://github.com/mikandrzej/ha-blueprints/blob/main/blueprints/automation/mikolaj/kotlownia_piec.yaml`

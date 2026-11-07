@@ -134,10 +134,42 @@ blueprint:
               step: 1
               unit_of_measurement: min
               mode: box
+    status_section:
+      name: Stan pracy pieca (do wyświetlenia na panelu)
+      icon: mdi:information-outline
+      collapsed: true
+      input:
+        status_text:
+          name: Opis stanu (input_text)
+          description: >-
+            Opcjonalnie: input_text (maks. długość 255), do którego automatyzacja
+            wpisuje, co robi piec i dlaczego, np. "Grzeje – zapotrzebowanie:
+            Kuchnia, Salon".
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_text
+        status_until:
+          name: Koniec bieżącej fazy (input_datetime)
+          description: >-
+            Opcjonalnie: input_datetime (data i godzina) z momentem końca
+            bieżącego oczekiwania (min. czas pracy, min. przerwa, opóźnienia).
+            Gdy nic nie czeka, ma wartość z przeszłości. Z niego panel może
+            policzyć "zostało X min".
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_datetime
 
-# restart: nowe zdarzenie (np. powrót zapotrzebowania) anuluje oczekujące
-# wyłączenie i odwrotnie.
-mode: restart
+# parallel: aktualizacje stanu nie przerywają oczekiwania na min. czas pracy /
+# przerwy. Każda gałąź po odczekaniu ponownie sprawdza zapotrzebowanie.
+mode: parallel
+max: 25
+max_exceeded: silent
 
 trigger_variables:
   valves: !input valve_sensors
@@ -165,13 +197,104 @@ triggers:
   - trigger: homeassistant
     id: start
     event: start
+  # Aktualizacja opisu stanu (bez sterowania piecem).
+  - trigger: state
+    id: status
+    entity_id: !input valve_sensors
+  - trigger: state
+    id: status
+    entity_id: !input heating_climates
+  - trigger: state
+    id: status
+    entity_id: !input season_switches
+  - trigger: state
+    id: status
+    entity_id: !input boiler
+  - trigger: time_pattern
+    id: status
+    minutes: "/1"
 
 variables:
   boiler: !input boiler
   min_run: !input min_run
   min_off: !input min_off
+  on_delay_s: !input on_delay
+  off_delay_s: !input off_delay
+  status_text: !input status_text
+  status_until: !input status_until
 
 actions:
+  # --- Opis stanu ---------------------------------------------------------
+  - variables:
+      season_ok: "{{ seasons | reject('is_state', 'on') | list | count == 0 }}"
+      demand_names: >-
+        {% set ns = namespace(n=[]) %}
+        {% for e in valves if states(e) | float(0) >= threshold | float %}
+          {% set ns.n = ns.n + [area_name(e) or state_attr(e, 'friendly_name') or e] %}
+        {% endfor %}
+        {% for e in climates if is_state_attr(e, 'hvac_action', 'heating') %}
+          {% set ns.n = ns.n + [area_name(e) or state_attr(e, 'friendly_name') or e] %}
+        {% endfor %}
+        {{ ns.n | unique | list }}
+      boiler_on: "{{ is_state(boiler, 'on') }}"
+      boiler_age: >-
+        {{ (now() - states[boiler].last_changed).total_seconds() if states[boiler] is not none else 999999 }}
+      prev_text: "{{ states(status_text[0]) if status_text | count > 0 else '' }}"
+      prev_until: >-
+        {{ state_attr(status_until[0], 'timestamp') | float(0) if status_until | count > 0 else 0 }}
+      status: >-
+        {% set names = demand_names | join(', ') %}
+        {% set demand = season_ok and demand_names | count > 0 %}
+        {% set t = now().timestamp() %}
+        {% set idle = prev_until if 0 < prev_until <= t else t %}
+        {% if demand and boiler_on %}
+          {% set txt = 'Grzeje – zapotrzebowanie: ' ~ names %}{% set until = idle %}
+        {% elif demand %}
+          {% if boiler_age < min_off | float * 60 %}
+            {% set txt = 'Czeka – minimalna przerwa pieca (zapotrzebowanie: ' ~ names ~ ')' %}
+            {% set until = t + min_off | float * 60 - boiler_age %}
+          {% else %}
+            {% set txt = 'Włącza się – potwierdzanie zapotrzebowania: ' ~ names %}
+            {% set until = prev_until if prev_text.startswith('Włącza się') and prev_until > t
+                           else t + on_delay_s | float %}
+          {% endif %}
+        {% elif boiler_on %}
+          {% set why = 'sezon grzewczy wyłączony' if not season_ok else 'brak zapotrzebowania' %}
+          {% if boiler_age < min_run | float * 60 %}
+            {% set txt = 'Kończy cykl – minimalny czas pracy (' ~ why ~ ')' %}
+            {% set until = t + min_run | float * 60 - boiler_age %}
+          {% else %}
+            {% set txt = 'Kończy cykl – opóźnienie wyłączenia (' ~ why ~ ')' %}
+            {% set until = prev_until if prev_text.startswith('Kończy cykl – opóźnienie') and prev_until > t
+                           else t + off_delay_s | float %}
+          {% endif %}
+        {% elif not season_ok %}
+          {% set txt = 'Wyłączony – sezon grzewczy wyłączony' %}{% set until = idle %}
+        {% else %}
+          {% set txt = 'Wyłączony – brak zapotrzebowania' %}{% set until = idle %}
+        {% endif %}
+        {{ {'text': txt[:255], 'until': until | int} }}
+  - if:
+      - condition: template
+        value_template: "{{ status_text | count > 0 and states(status_text[0]) != status.text }}"
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: "{{ status_text[0] }}"
+        data:
+          value: "{{ status.text }}"
+  - if:
+      - condition: template
+        value_template: "{{ status_until | count > 0 and (prev_until | int) != (status.until | int) }}"
+    then:
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: "{{ status_until[0] }}"
+        data:
+          timestamp: "{{ status.until }}"
+  - condition: template
+    value_template: "{{ trigger.id != 'status' }}"
+  # --- Sterowanie piecem --------------------------------------------------
   - variables:
       demand_now: >-
         {{ (seasons | reject('is_state', 'on') | list | count == 0)
