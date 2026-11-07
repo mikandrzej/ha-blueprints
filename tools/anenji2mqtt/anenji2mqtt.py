@@ -16,6 +16,7 @@ MQTT_PASS = os.environ.get("MQTT_PASS") or None
 DEV_ID = os.environ.get("DEVICE_ID", "falownik_anenji")
 DEV_NAME = os.environ.get("DEVICE_NAME", "Falownik")
 WRITE_ENABLED = os.environ.get("WRITE_ENABLED", "1") == "1"
+DEBOUNCE = float(os.environ.get("DEBOUNCE", "1.0"))  # s ciszy przed zapisem
 BASE = f"anenji/{DEV_ID}"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -183,13 +184,23 @@ def parse_command(key, payload):
         return reg, int(round(val / sc))
     raise ValueError(f"nieznany klucz {key!r}")
 
+WRITE_FC = [16]  # ten falownik nie odpowiada na FC06; FC16 działa
+
 def write_register(inst, reg, raw):
     try:
-        inst.write_register(reg, raw, 0, functioncode=6)
+        if WRITE_FC[0] == 16:
+            inst.write_registers(reg, [raw])
+        else:
+            inst.write_register(reg, raw, 0, functioncode=6)
     except Exception as e:
-        log.info("FC06 failed (%s), trying FC16", e)
-        inst.write_registers(reg, [raw])
-    time.sleep(0.3)
+        other = 6 if WRITE_FC[0] == 16 else 16
+        log.info("FC%02d failed (%s), trying FC%02d", WRITE_FC[0], e, other)
+        if other == 16:
+            inst.write_registers(reg, [raw])
+        else:
+            inst.write_register(reg, raw, 0, functioncode=6)
+        WRITE_FC[0] = other
+    time.sleep(0.1)
     back = inst.read_register(reg, 0, 3)
     if back != raw:
         raise IOError(f"rejestr {reg}: zapisano {raw}, odczytano {back} (falownik odrzucił wartość?)")
@@ -271,8 +282,18 @@ def main():
         t0 = time.time()
         force_settings = False
         # 1) komendy z HA
-        while not commands.empty():
-            key, payload = commands.get()
+        pending = {}
+        if not commands.empty():
+            # debounce: zbieraj komendy, aż przez DEBOUNCE s nie przyjdzie nowa (szybkie klikanie +/-)
+            last = time.time()
+            while time.time() - last < DEBOUNCE:
+                try:
+                    key, payload = commands.get(timeout=0.1)
+                    pending[key] = payload  # zostaje tylko ostatnia wartość danego ustawienia
+                    last = time.time()
+                except queue.Empty:
+                    pass
+        for key, payload in pending.items():
             try:
                 reg, raw = parse_command(key, payload)
                 write_register(inst, reg, raw)
