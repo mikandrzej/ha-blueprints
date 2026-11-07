@@ -1,0 +1,89 @@
+# Automatyzacja HA (do zapisania przez /api/config/automation/config/falownik_automat_przelaczanie)
+# Wymaga helperów: input_boolean.falownik_automat, input_select.falownik_automat_kryterium
+#  (opcje: "Napięcie baterii", "SOC baterii"), input_number.falownik_automat_prog_v / _powrot_v /
+#  _prog_soc / _powrot_soc / _zwloka. SOC_ENTITIES poniżej podmień na faktyczne encje SOC z JK BMS.
+id: falownik_automat_przelaczanie
+alias: Falownik – automatyczne przełączanie bateria/sieć
+description: >-
+  Przy niskiej baterii przełącza falownik na zasilanie z sieci (SUB), po naładowaniu z PV
+  wraca na baterię (SBU). Ładowanie zawsze tylko z PV. Progi i kryterium na karcie "Sieć elektryczna".
+mode: restart
+triggers:
+  - trigger: template
+    value_template: >-
+      {% set socs = [states('sensor.SOC_HAKADI'), states('sensor.SOC_TEEWAYCELL')] | select('is_number') | map('float') | list %}
+      {% set soc = (socs | sum / socs | count) if socs else states('sensor.falownik_anenji_battery_soc') | float(100) %}
+      {% if is_state('input_select.falownik_automat_kryterium', 'SOC baterii') %}
+        {{ soc < states('input_number.falownik_automat_prog_soc') | float(0) }}
+      {% else %}
+        {{ states('sensor.falownik_anenji_battery_voltage') | float(99) < states('input_number.falownik_automat_prog_v') | float(0) }}
+      {% endif %}
+    for:
+      minutes: "{{ states('input_number.falownik_automat_zwloka') | int(3) }}"
+    id: na_siec
+  - trigger: template
+    value_template: >-
+      {% set socs = [states('sensor.SOC_HAKADI'), states('sensor.SOC_TEEWAYCELL')] | select('is_number') | map('float') | list %}
+      {% set soc = (socs | sum / socs | count) if socs else states('sensor.falownik_anenji_battery_soc') | float(0) %}
+      {% if is_state('input_select.falownik_automat_kryterium', 'SOC baterii') %}
+        {{ soc >= states('input_number.falownik_automat_powrot_soc') | float(101) }}
+      {% else %}
+        {{ states('sensor.falownik_anenji_battery_voltage') | float(0) >= states('input_number.falownik_automat_powrot_v') | float(99) }}
+      {% endif %}
+    for:
+      minutes: "{{ states('input_number.falownik_automat_zwloka') | int(3) }}"
+    id: na_baterie
+conditions:
+  - condition: state
+    entity_id: input_boolean.falownik_automat
+    state: "on"
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: na_siec
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: select.falownik_anenji_set_output_priority
+                state: "SUB – PV, sieć, bateria"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: select.falownik_anenji_set_output_priority
+            data:
+              option: "SUB – PV, sieć, bateria"
+          - action: logbook.log
+            data:
+              name: Falownik
+              message: przełączono na sieć (bateria poniżej progu)
+      - conditions:
+          - condition: trigger
+            id: na_baterie
+          - condition: not
+            conditions:
+              - condition: state
+                entity_id: select.falownik_anenji_set_output_priority
+                state: "SBU – PV, bateria, sieć"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: select.falownik_anenji_set_output_priority
+            data:
+              option: "SBU – PV, bateria, sieć"
+          - action: logbook.log
+            data:
+              name: Falownik
+              message: przełączono na baterię (bateria naładowana)
+  - if:
+      - condition: not
+        conditions:
+          - condition: state
+            entity_id: select.falownik_anenji_set_charging_priority
+            state: "Tylko PV"
+    then:
+      - action: select.select_option
+        target:
+          entity_id: select.falownik_anenji_set_charging_priority
+        data:
+          option: "Tylko PV"
