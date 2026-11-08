@@ -116,10 +116,18 @@ sensor:
         {{ none }}
       {% endif %}
     {% endif %}
-  # Zaraz po starcie HA czujniki z MQTT są przez chwilę "unknown", a głowice już działają.
-  # Wtedy strefa jest niedostępna, zamiast na sekundę pokazać temperaturę z głowic.
+  # Zaraz po starcie HA albo restarcie Zigbee2MQTT czujniki są przez chwilę
+  # "unknown"/"unavailable", a głowice mogą wrócić wcześniej (albo zniknąć później).
+  # Przez pierwsze 5 min takiej przerwy strefa jest niedostępna, zamiast pokazywać
+  # temperaturę z głowic. Dopiero dłuższa awaria czujnika włącza tryb awaryjny.
   availability: >-
-    {{ not (ext | count > 0 and ext | map('states') | select('eq', 'unknown') | list | count == ext | count) and (
+    {%- set brak = ext | reject('has_value') | list %}
+    {%- set ns = namespace(swieza_awaria=false) %}
+    {%- for s in brak if states[s] is not none
+         and (now() - states[s].last_changed).total_seconds() < 300 %}
+      {%- set ns.swieza_awaria = true %}
+    {%- endfor %}
+    {{ not (ext | count > 0 and brak | count == ext | count and ns.swieza_awaria) and (
        ext | select('has_value') | list | count > 0
        or trvs | map('state_attr', 'current_temperature') | map('float', none) | reject('none') | list | count > 0) }}
   attributes:
