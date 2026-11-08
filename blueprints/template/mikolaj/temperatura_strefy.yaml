@@ -31,7 +31,9 @@ blueprint:
     max_age:
       name: Maksymalny wiek odczytu czujnika
       description: >-
-        Po tylu minutach bez zmiany odczytu czujnik uznajemy za martwy.
+        Po tylu minutach bez kontaktu z czujnikiem uznajemy go za martwy.
+        Jeśli urządzenie ma w Zigbee2MQTT encję *_last_seen, włącz ją w HA:
+        wtedy liczy się każdy raport, także z tą samą wartością.
         Czujniki z Zigbee2MQTT nie odświeżają w HA czasu raportu, gdy wysyłają
         tę samą wartość, a czujniki Tuya przy stałej temperaturze raportują
         rzadko (np. co 120 min). Ustaw wyraźnie więcej niż maksymalny interwał
@@ -88,11 +90,18 @@ sensor:
   device_class: temperature
   state_class: measurement
   state: >-
-    {% set ns = namespace(ok=[]) %}
-    {% for s in ext if has_value(s) and states(s) | is_number
-         and (now() - states[s].last_reported).total_seconds() < max_age_min * 60 %}
-      {% set ns.ok = ns.ok + [states(s) | float] %}
-    {% endfor %}
+    {%- set ns = namespace(ok=[]) %}
+    {%- for s in ext if has_value(s) and states(s) | is_number %}
+      {#- czas ostatniego kontaktu: last_seen z Zigbee2MQTT (jeśli encja jest włączona),
+          bo MQTT nie odświeża last_reported, gdy przychodzi ta sama wartość #}
+      {%- set d = device_id(s) %}
+      {%- set ls = (device_entities(d) | select('match', 'sensor\\..*_last_seen$') | list) if d else [] %}
+      {%- set seen = as_datetime(states(ls[0]), none) if ls | count > 0 and has_value(ls[0]) else none %}
+      {%- set t = [seen, states[s].last_reported] | reject('none') | max %}
+      {%- if (now() - t).total_seconds() < max_age_min * 60 %}
+        {%- set ns.ok = ns.ok + [states(s) | float] %}
+      {%- endif %}
+    {%- endfor %}
     {% if ns.ok | count > 0 %}
       {{ (ns.ok | sum / ns.ok | count) | round(1) }}
     {% else %}
@@ -107,14 +116,24 @@ sensor:
         {{ none }}
       {% endif %}
     {% endif %}
+  # Zaraz po starcie HA czujniki z MQTT są przez chwilę "unknown", a głowice już działają.
+  # Wtedy strefa jest niedostępna, zamiast na sekundę pokazać temperaturę z głowic.
   availability: >-
-    {{ ext | select('has_value') | list | count > 0
-       or trvs | map('state_attr', 'current_temperature') | map('float', none) | reject('none') | list | count > 0 }}
+    {{ not (ext | count > 0 and ext | map('states') | select('eq', 'unknown') | list | count == ext | count) and (
+       ext | select('has_value') | list | count > 0
+       or trvs | map('state_attr', 'current_temperature') | map('float', none) | reject('none') | list | count > 0) }}
   attributes:
     zrodlo: >-
-      {% set ns = namespace(ok=false) %}
-      {% for s in ext if has_value(s) and states(s) | is_number
-           and (now() - states[s].last_reported).total_seconds() < max_age_min * 60 %}
-        {% set ns.ok = true %}
-      {% endfor %}
-      {{ 'czujnik' if ns.ok else 'glowice' }}
+      {%- set ns = namespace(ok=[]) %}
+      {%- for s in ext if has_value(s) and states(s) | is_number %}
+        {#- czas ostatniego kontaktu: last_seen z Zigbee2MQTT (jeśli encja jest włączona),
+            bo MQTT nie odświeża last_reported, gdy przychodzi ta sama wartość #}
+        {%- set d = device_id(s) %}
+        {%- set ls = (device_entities(d) | select('match', 'sensor\\..*_last_seen$') | list) if d else [] %}
+        {%- set seen = as_datetime(states(ls[0]), none) if ls | count > 0 and has_value(ls[0]) else none %}
+        {%- set t = [seen, states[s].last_reported] | reject('none') | max %}
+        {%- if (now() - t).total_seconds() < max_age_min * 60 %}
+          {%- set ns.ok = ns.ok + [states(s) | float] %}
+        {%- endif %}
+      {%- endfor %}
+      {{ 'czujnik' if ns.ok | count > 0 else 'glowice' }}
